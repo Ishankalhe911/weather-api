@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # 1. Your production merchant wallet address (Must be a valid Mainnet address)
-AVM_ADDRESS = os.getenv("AVM_ENDPOINT_WALLET", "3TWBSI64D4DHR7JK3REJMO5QV4GFEW3FCKXJEUNAWEO3IXBA2DHUNJ5N6E")
+AVM_ADDRESS = os.getenv("AVM_ENDPOINT_WALLET", "BRSMWTNWFRW26LU7FQ7CG2KY65P5HTCBXX6QAOIEM35NESQFGWM4KWEYDU")
 FACILITATOR_URL = "https://x402.org/facilitator"
 
 # 2. Mainnet Genesis Hash (Fixed implicit concatenation bug)
