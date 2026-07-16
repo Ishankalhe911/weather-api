@@ -27,6 +27,8 @@ IMPORTANT - VERIFY BEFORE PRODUCTION:
 """
 
 import os
+from x402.schemas import AssetAmount                 # add this import at top
+
 import logging
 from datetime import date, timedelta
 from typing import Optional
@@ -92,10 +94,16 @@ server.register(AVM_NETWORK, ExactAvmServerScheme())
 routes: dict[str, RouteConfig] = {
     "POST /weather-risk": RouteConfig(
         accepts=[
-            PaymentOption(
-                scheme="exact", network=AVM_NETWORK, pay_to=AVM_ADDRESS,
-                price=WEATHER_PRICE, extra={"asset": USDC_ASA_ID, "name": "USDC", "decimals": 6}
+            PaymentOption(                                        # FIX 3
+            scheme="exact",
+            network=AVM_NETWORK,
+            pay_to=AVM_ADDRESS,
+            price=AssetAmount(
+            amount=WEATHER_PRICE,                         # "83000" = $0.083 at 6 decimals
+            asset=USDC_ASA_ID,                            # asset belongs HERE, not in extra
+           extra={"name": "USDC", "decimals": 6},
             ),
+          ),
             # PaymentOption(
             #     scheme="exact", network=EVM_NETWORK, pay_to=EVM_ADDRESS,
             #     price=WEATHER_PRICE_MICRO_USDC, asset=BASE_USDC_CONTRACT, extra={"name": "USDC", "decimals": 6}
