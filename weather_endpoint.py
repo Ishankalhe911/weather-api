@@ -60,7 +60,7 @@ os.environ["ALGOD_TOKEN"] = ""
 os.environ["AVM_ALGOD_TOKEN"] = ""
 # 1. Your production merchant wallet address (Must be a valid Mainnet address)
 AVM_ADDRESS = os.getenv("AVM_ENDPOINT_WALLET", "BRSMWTNWFRW26LU7FQ7CG2KY65P5HTCBXX6QAOIEM35NESQFGWM4KWEYDU")
-FACILITATOR_URL = "https://x402.org/facilitator"
+FACILITATOR_URL = "https://facilitator.x402.goplausible.xyz"
 
 # 2. Mainnet Genesis Hash (Fixed implicit concatenation bug)
 AVM_NETWORK: Network = os.getenv(
