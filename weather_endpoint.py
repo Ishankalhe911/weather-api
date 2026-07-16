@@ -55,7 +55,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config - set via environment variables (Defaults to Mainnet)
 # ---------------------------------------------------------------------------
-
+import os
+os.environ["ALGOD_TOKEN"] = ""
+os.environ["AVM_ALGOD_TOKEN"] = ""
 # 1. Your production merchant wallet address (Must be a valid Mainnet address)
 AVM_ADDRESS = os.getenv("AVM_ENDPOINT_WALLET", "BRSMWTNWFRW26LU7FQ7CG2KY65P5HTCBXX6QAOIEM35NESQFGWM4KWEYDU")
 FACILITATOR_URL = "https://x402.org/facilitator"

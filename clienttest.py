@@ -1,23 +1,20 @@
 """
-clienttest.py
-Simulates an AI Agent paying for and calling your local API.
+clienttest.py (Mainnet Production Tester)
+Simulates an AI Agent paying for and calling the live Agrometric Intelligence API.
 """
-import os
 import asyncio
 import json
 import base64
+import logging
+import getpass # For secure password/mnemonic entry
 
-# Import algosdk utilities for our native signer
 from algosdk import mnemonic, account, encoding
-
-# Import the x402 client tools
 from x402.client import x402Client
 from x402.mechanisms.avm.exact import ExactAvmScheme
-# NEW: Import the httpx wrapper!
 from x402.http.clients.httpx import wrapHttpxWithPayment
-import logging
-# This forces the x402 client to print exactly why the payment failed
-logging.basicConfig(level=logging.DEBUG)
+
+# Turn on debug logging to see the payment handshake
+logging.basicConfig(level=logging.INFO) # Changed to INFO so it doesn't spam their terminal, just shows HTTP status
 
 # --- 1. BUILD THE NATIVE SIGNER ---
 class MnemonicSigner:
@@ -31,7 +28,6 @@ class MnemonicSigner:
         return self._address
         
     def sign_transactions(self, unsigned_txns: list[bytes], indexes_to_sign: list[int]) -> list[bytes | None]:
-        """Signs the array of transactions as requested by the x402 Facilitator."""
         results = [None] * len(unsigned_txns)
         for i in indexes_to_sign:
             b64_txn = base64.b64encode(unsigned_txns[i]).decode('utf-8')
@@ -41,24 +37,35 @@ class MnemonicSigner:
             results[i] = base64.b64decode(b64_stxn)
         return results
 
-# --- 2. SETUP THE BUYER ---
-# Make sure your full 25-word phrase is pasted here
-BUYER_MNEMONIC = os.environ.get(
-    "BUYER_MNEMONIC", 
-    "valley scene survey kiwi purchase outer crumble toast slow left tower simple rebuild digital lesson morning between control vital grocery prefer catch tennis above gym"
-)
-
-signer = MnemonicSigner(BUYER_MNEMONIC)
-
-# --- 3. CONFIGURE THE x402 CLIENT ---
-x402_client = x402Client()
-# Register the Algorand Testnet scheme
-x402_client.register("algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=", ExactAvmScheme(signer=signer))
-
-
+# --- 2. THE TEST EXECUTION ---
 async def run_test():
-    print("🚀 Firing request to local Agronomic Intelligence Engine...")
-    print(f"💳 Paying from test wallet: {signer.address}")
+    print("\n🌿 Welcome to the Agrometric Intelligence API Tester 🌿")
+    print("------------------------------------------------------")
+    
+    # Securely ask the colleague for their wallet phrase (it hides the text as they type)
+    print("⚠️ WARNING: You are connecting to ALGORAND MAINNET.")
+    buyer_phrase = getpass.getpass("Paste your 25-word wallet phrase (input will be hidden): ")
+    
+    try:
+        signer = MnemonicSigner(buyer_phrase.strip())
+    except Exception as e:
+        print("❌ Invalid mnemonic phrase. Please ensure it is exactly 25 words.")
+        return
+
+    print(f"\n✅ Wallet authenticated: {signer.address}")
+    
+    # Confirmation Safety Switch
+    confirm = input("💳 This request will cost 0.083 REAL USDC. Proceed? (y/n): ")
+    if confirm.lower() != 'y':
+        print("🛑 Request aborted. No funds spent.")
+        return
+
+    # Configure the client for Mainnet
+    x402_client = x402Client()
+    x402_client.register("algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73ktiC1qzkkit8=", ExactAvmScheme(signer=signer))
+    
+    # ⚠️ REPLACE THIS URL WITH YOUR ACTUAL RENDER URL
+    API_URL = "https://agri-intel-weather.onrender.com/weather-risk"
     
     payload = {
         "lat": 18.35,
@@ -69,28 +76,28 @@ async def run_test():
         "forecast_days": 16
     }
 
+    print("\n🚀 Firing request to live Agrometric Intelligence Engine...")
+
     try:
-        # NEW: Wrap the x402_client inside httpx so it can actually make internet requests
         async with wrapHttpxWithPayment(x402_client) as http:
-            
-            # Now we use 'http.post' instead of 'client.post'
             response = await http.post(
-                "http://localhost:8001/weather-risk",
+                API_URL,
                 json=payload,
-                timeout=20.0
+                timeout=30.0 # Bumped timeout to 30s just in case Render is waking up from sleep
             )
             
-            print(f"✅ Status Code: {response.status_code}")
+            print(f"\nHTTP Status Code: {response.status_code}")
             
             if response.status_code == 200:
-                print("✅ Payment settled successfully and data received!")
+                print("✅ Payment settled on Mainnet! Data received:\n")
                 print(json.dumps(response.json(), indent=2))
             else:
                 print("⚠️ Request failed. Response:")
                 print(response.text)
             
     except Exception as e:
-        print(f"❌ Payment handling or API communication error: {e}")
+        print(f"\n❌ Payment handling or API communication error: {e}")
+        print("Make sure your wallet has at least 0.1 ALGO for gas and is opted into USDC (Asset: 31566704).")
 
 if __name__ == "__main__":
     asyncio.run(run_test())
