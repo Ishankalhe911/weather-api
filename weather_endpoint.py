@@ -277,6 +277,7 @@ async def weather_risk(request: Request, body: WeatherRiskRequest,):
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
+@app.head("/health")
 async def health():
     return {"status": "ok", "endpoint": "weather-risk", "price_usdc": "0.083"}
 
