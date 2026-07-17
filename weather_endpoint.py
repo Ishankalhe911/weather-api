@@ -44,7 +44,7 @@ from x402.mechanisms.avm.exact import ExactAvmServerScheme
 # from x402.mechanisms.svm.exact import ExactSvmServerScheme
 from x402.schemas import Network
 from x402.server import x402ResourceServer
-
+from x402.extensions import bazaar_resource_server_extension, declare_discovery_extension
 # Our pure data module - no payments, no AI
 
 import sys, pathlib
@@ -88,35 +88,49 @@ facilitator = HTTPFacilitatorClient(
 
 server = x402ResourceServer(facilitator)
 server.register(AVM_NETWORK, ExactAvmServerScheme())
+server.register_extension(bazaar_resource_server_extension)
 # server.register(EVM_NETWORK, ExactEvmServerScheme())  # NEW: Register Base
 # server.register(SVM_NETWORK, ExactSvmServerScheme())
 
 routes: dict[str, RouteConfig] = {
     "POST /weather-risk": RouteConfig(
         accepts=[
-            PaymentOption(                                        # FIX 3
-            scheme="exact",
-            network=AVM_NETWORK,
-            pay_to=AVM_ADDRESS,
-            price=AssetAmount(
-            amount=WEATHER_PRICE,                         # "83000" = $0.083 at 6 decimals
-            asset=USDC_ASA_ID,                            # asset belongs HERE, not in extra
-            extra={"name": "USDC", "decimals": 6},
-            ),
+            PaymentOption(                                        
+                scheme="exact",
+                network=AVM_NETWORK,
+                pay_to=AVM_ADDRESS,
+                price=AssetAmount(
+                    amount=WEATHER_PRICE,                         
+                    asset=USDC_ASA_ID,                            
+                    
+                ),
+                extra={"name": "USDC", "decimals": 6},
             ),
         ],
         description=(
-            "Agricultural weather intelligence for Maharashtra farmers. "
-            "Returns three horizons in one payload: (1) precise 16-day forecast "
-            "with derived signals - next rain date, dry spells, spray windows, "
-            "wind risk, GDD accumulation, drone-spray safety windows, pest/disease "
-            "risk windows; (2) ECMWF sub-seasonal outlook for weeks 3-4 (when "
-            "harvest_date is given); (3) NASA POWER 30-year climatology adjusted "
-            "by ENSO/IOD teleconnection state, spanning day 40 through harvest_date. "
-            "Response is pure structured data - no language, no advice - for any "
-            "calling agent (LLM, DeFi contract, trading algorithm) to interpret."
+            "Advanced agrometeorological intelligence API. Delivers multi-horizon "
+            "agronomic data: (1) 16-day forecast with derived biological & operational "
+            "risk signals (GDD, spray windows); (2) ECMWF sub-seasonal trends; "
+            "(3) NASA POWER 30-year climatology adjusted for ENSO/IOD states. "
+            "Provides pure structured payloads optimized for AI agents, DeFi parametric "
+            "insurance, and algorithmic agri-trading."
         ),
         mime_type="application/json",
+        extensions=declare_discovery_extension(
+            input={"lat": 18.35, "lon": 77.31, "crop": "soybean"},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "lat": {"type": "number", "description": "Latitude (-90 to 90)"},
+                    "lon": {"type": "number", "description": "Longitude (-180 to 180)"},
+                    "crop": {"type": "string", "description": "Target crop for stress modeling (e.g., soybean, corn, wheat)"},
+                    "sowing_date": {"type": "string", "description": "ISO format YYYY-MM-DD"},
+                    "harvest_date": {"type": "string", "description": "ISO format YYYY-MM-DD (Triggers sub-seasonal/seasonal horizons)"},
+                    "forecast_days": {"type": "integer", "description": "1 to 16 days"}
+                },
+                "required": ["lat", "lon"]
+            }
+        )
     ),
 }
 
