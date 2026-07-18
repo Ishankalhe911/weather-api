@@ -129,7 +129,8 @@ routes: dict[str, RouteConfig] = {
                     "forecast_days": {"type": "integer", "description": "1 to 16 days"}
                 },
                 "required": ["lat", "lon"]
-            }
+            },
+            body_type="json"
         )
     ),
 }

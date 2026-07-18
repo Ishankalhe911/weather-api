@@ -70,8 +70,8 @@ async def run_test():
     API_URL = "https://agrometeorological-api.onrender.com/weather-risk"
     
     payload = {
-        "lat": 18.35,
-        "lon": 77.31,
+        "lat": 19.10,
+        "lon": 77.17,
         "crop": "soybean",
         "sowing_date": "2026-06-20",
         "harvest_date": "2026-10-15",
