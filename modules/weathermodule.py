@@ -79,7 +79,7 @@ async def _fetch_open_meteo(lat: float, lon: float, days: int = 16) -> dict:
             "wind_speed_10m_max",
             "weathercode"
         ]),
-        "timezone": "Asia/Kolkata",
+        "timezone": "auto",
         "forecast_days": days,
     }
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
