@@ -116,6 +116,7 @@ routes: dict[str, RouteConfig] = {
             "insurance, and algorithmic agri-trading."
         ),
         mime_type="application/json",
+        resource="https://agriintellect.site/weather-risk",
         extensions=declare_discovery_extension(
             input={"lat": 18.35, "lon": 77.31, "crop": "soybean"},
             input_schema={
