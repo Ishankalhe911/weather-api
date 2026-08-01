@@ -2,7 +2,7 @@
 weather_endpoint.py (v3)
 -------------------------
 FastAPI route: POST /weather-risk
-x402-avm payment gate: $0.083 USDC on Algorand mainnet
+x402-avm payment gate: $0.015 USDC on Algorand mainnet
 
 Payment flow (M2M / direct x402):
     Any caller -> sends X-PAYMENT header with USDC tx
@@ -74,7 +74,7 @@ AVM_NETWORK: Network = os.getenv(
 USDC_ASA_ID = os.getenv("USDC_ASA_ID", "31566704")
 
 # 4. Price targeted via absolute atomic micro-units (Fixed decimal scaling bug)
-WEATHER_PRICE = os.getenv("WEATHER_PRICE_USDC", "83000")
+WEATHER_PRICE = os.getenv("WEATHER_PRICE_USDC", "15000")
 
 MAX_HARVEST_HORIZON_DAYS = 270
 
@@ -215,14 +215,14 @@ class WeatherRiskRequest(BaseModel):
 
 @app.post("/weather-risk",responses={
         402: {
-            "description": "Payment Required. A cryptographically signed Algorand transaction proof for $0.083 USDC must be provided in the X-PAYMENT header."
+            "description": "Payment Required. A cryptographically signed Algorand transaction proof for $0.015USDC must be provided in the X-PAYMENT header."
         }
     })
 async def weather_risk(request: Request, body: WeatherRiskRequest,):
     """
     Returns a multi-horizon structured weather payload for a given location.
 
-    Payment: $0.083 USDC via x402 header (Algorand mainnet)
+    Payment: $0.015 USDC via x402 header (Algorand mainnet)
     No API key required. No account needed.
 
     Response is pure data - no language, no advice.
@@ -281,7 +281,7 @@ async def weather_risk(request: Request, body: WeatherRiskRequest,):
 @app.get("/health")
 @app.head("/health")
 async def health():
-    return {"status": "ok", "endpoint": "weather-risk", "price_usdc": "0.083"}
+    return {"status": "ok", "endpoint": "weather-risk", "price_usdc": "0.015"}
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +295,7 @@ async def index():
         "name": "AgriIntel Weather Risk API",
         "version": "2.0.0",
         "endpoint": "POST /weather-risk",
-        "price": "$0.083 USDC",
+        "price": "$0.015 USDC",
         "network": "Algorand mainnet",
         "payment": "x402 (X-PAYMENT header)",
         "coverage": "Maharashtra, India",
