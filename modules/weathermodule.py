@@ -40,8 +40,8 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 NASA_POWER_DAILY_URL = "https://power.larc.nasa.gov/api/temporal/daily/point"
 NASA_POWER_CLIMATOLOGY_URL = "https://power.larc.nasa.gov/api/temporal/climatology/point"
 
-TIMEOUT_SECONDS = 3.0
-CLIMATOLOGY_TIMEOUT = 5.0
+TIMEOUT_SECONDS = 4.0
+CLIMATOLOGY_TIMEOUT = 9.0
 
 CROP_THRESHOLDS = {
     "soybean": {"max_daily_rain_mm": 50, "min_rain_7d_mm": 20, "max_temp_c": 38, "min_temp_c": 15, "spray_rain_block_mm": 5, "base_temp_gdd": 10},
