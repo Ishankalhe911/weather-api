@@ -26,7 +26,7 @@ import pathlib
 from datetime import date, timedelta
 from typing import Optional
 import logging
-
+import os
 sys.path.append(str(pathlib.Path(__file__).parent))
 from enso_iod_module import get_enso_iod_state, get_monthly_adjustment_factor
 
@@ -39,9 +39,11 @@ logger = logging.getLogger(__name__)
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 NASA_POWER_DAILY_URL = "https://power.larc.nasa.gov/api/temporal/daily/point"
 NASA_POWER_CLIMATOLOGY_URL = "https://power.larc.nasa.gov/api/temporal/climatology/point"
+VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY", "")
 
-TIMEOUT_SECONDS = 1.5
-CLIMATOLOGY_TIMEOUT = 3.0
+TIMEOUT_SECONDS =4.0 
+CLIMATOLOGY_TIMEOUT = 9.0
 
 CROP_THRESHOLDS = {
     "soybean": {"max_daily_rain_mm": 50, "min_rain_7d_mm": 20, "max_temp_c": 38, "min_temp_c": 15, "spray_rain_block_mm": 5, "base_temp_gdd": 10},
@@ -122,6 +124,138 @@ async def _fetch_nasa_power_recent(lat: float, lon: float) -> dict:
     }
     return {"daily": daily}
 
+
+ 
+def _vc_icon_to_wmo(icon: Optional[str]) -> Optional[int]:
+    """
+    Map Visual Crossing icon string → WMO weather interpretation code (wcode).
+ 
+    The formatter's daily_preview uses wcode for emoji display and the
+    "wcode 95-99 = don't go to the field" safety rule. This mapper preserves
+    that behaviour when VC is the data source.
+ 
+    Mapping is conservative: when in doubt, map to a lower-severity code
+    rather than over-warning farmers. Unknown icons → None (formatter skips).
+    """
+    if icon is None:
+        return None
+    _MAP = {
+        # Clear
+        "clear-day":               0,
+        "clear-night":             0,
+        # Partly cloudy
+        "partly-cloudy-day":       2,
+        "partly-cloudy-night":     2,
+        # Overcast / windy (no precip)
+        "cloudy":                  3,
+        "wind":                    1,
+        # Fog
+        "fog":                     45,
+        # Rain — moderate (most common Maharashtra monsoon state)
+        "rain":                    63,
+        # Showers (lighter, showery)
+        "showers-day":             80,
+        "showers-night":           80,
+        # Thunderstorm — triggers "शेतात जाऊ नका" safety rule in formatter
+        "thunder-rain":            95,
+        "thunder-showers-day":     95,
+        "thunder-showers-night":   95,
+        # Snow / sleet (rare in Maharashtra but map correctly)
+        "snow":                    73,
+        "snow-showers-day":        85,
+        "snow-showers-night":      85,
+        "sleet":                   67,
+    }
+    return _MAP.get(icon, None)  # unknown icon → None, formatter skips gracefully
+ 
+ 
+async def _fetch_visual_crossing(lat: float, lon: float, days: int = 15) -> dict:
+    """
+    Horizon 1 fallback: Visual Crossing Timeline API.
+ 
+    Returns a dict with the same key structure as _fetch_open_meteo() so that
+    _compute_derived_signals() receives identical input regardless of source.
+ 
+    Key differences vs Open-Meteo (handled below):
+      - VC caps at 15 days (not 16) — days param clamped to 15
+      - VC humidity is a single daily average (not separate max/min)
+        → rh_max_pct = avg humidity, rh_min_pct = None
+        → Delta-T computation disabled (same as NASA POWER fallback path)
+        → _compute_derived_signals already adds operational_factors warning
+      - VC icon is a string → mapped to WMO int via _vc_icon_to_wmo()
+      - VC et0 field requires explicit inclusion in elements param
+      - VC windgust = daily max gust → maps to wind_speed_10m_max (correct)
+ 
+    API key loaded from VISUAL_CROSSING_API_KEY env var.
+    If key is missing → raises immediately so caller falls through to NASA POWER.
+    """
+    if not VISUAL_CROSSING_API_KEY:
+        raise ValueError("VISUAL_CROSSING_API_KEY not set — skipping VC fallback")
+ 
+    # VC Timeline API: GET /timeline/{lat},{lon}/{date1}/{date2}
+    # Omitting date range → returns today + next 14 days (15 days total)
+    # unitGroup=metric → °C, mm, km/h — matches Open-Meteo units exactly
+    # include=days     → daily data only, no hourly (keeps response small)
+    # elements         → explicit list so et0 is guaranteed to be included
+    #                    (et0 is an ag field, not always in the default set)
+    location = f"{lat},{lon}"
+    params = {
+        "unitGroup":  "metric",
+        "include":    "days",
+        "elements":   (
+            "datetime,tempmax,tempmin,humidity,"
+            "precip,precipprob,et0,windgust,windspeed,cloudcover,icon,severerisk"
+        ),
+        "key":        VISUAL_CROSSING_API_KEY,
+        "contentType": "json",
+    }
+ 
+    url = f"{VISUAL_CROSSING_URL}/{location}"
+ 
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+ 
+    vc_days = data.get("days", [])
+    if not vc_days:
+        raise ValueError("Visual Crossing returned empty days array")
+ 
+    # Clamp to requested forecast_days (VC always returns up to 15)
+    vc_days = vc_days[:min(days, 15)]
+ 
+    def _safe(val, default=None):
+        """Return None for missing/null values; keep 0.0 as valid."""
+        return default if val is None else val
+ 
+    # Build the same dict shape _fetch_open_meteo() returns under ["daily"]
+    daily = {
+        "time":                        [d["datetime"] for d in vc_days],
+        "precipitation_sum":           [_safe(d.get("precip")) for d in vc_days],
+        "temperature_2m_max":          [_safe(d.get("tempmax")) for d in vc_days],
+        "temperature_2m_min":          [_safe(d.get("tempmin")) for d in vc_days],
+        # VC gives single daily avg humidity — use as rh_max proxy
+        # rh_min = None → _compute_derived_signals disables Delta-T
+        # (same behaviour as NASA POWER fallback, already handled gracefully)
+        "relative_humidity_2m_max":    [_safe(d.get("humidity")) for d in vc_days],
+        "relative_humidity_2m_min":    [None] * len(vc_days),
+        # et0: Penman-Monteith reference ET — exact semantic match with Open-Meteo
+        # Will be None if VC doesn't return it (old account / plan restriction)
+        "et0_fao_evapotranspiration":  [_safe(d.get("et0")) for d in vc_days],
+        # windgust = daily max gust speed → best proxy for wind_speed_10m_max
+        # Fall back to windspeed (avg) if windgust is absent
+        "wind_speed_10m_max":          [
+            _safe(d.get("windgust") if d.get("windgust") is not None
+                  else d.get("windspeed"))
+            for d in vc_days
+        ],
+        # WMO code mapped from VC icon string — None if icon unknown
+        "weathercode":                 [_vc_icon_to_wmo(d.get("icon")) for d in vc_days],
+        # soil_moisture not available from VC free tier
+        "soil_moisture_0_to_1cm":      [None] * len(vc_days),
+    }
+ 
+    return {"daily": daily}
 
 # ---------------------------------------------------------------------------
 # HORIZON 0 & microclimate helpers
@@ -508,17 +642,43 @@ async def get_weather_risk(
 
     h1_source = "open_meteo"
     daily = None
+ 
+    # ── Primary: Open-Meteo ───────────────────────────────────────────────────
     try:
         data = await _fetch_open_meteo(lat, lon, forecast_days)
         daily = data["daily"]
-    except Exception as e:
-        logger.warning(f"[weather] open_meteo failed: {e}, trying NASA POWER fallback")
+        logger.info("[weather] H1 source: open_meteo ✓")
+ 
+    except Exception as e_om:
+        logger.warning(f"[weather] open_meteo failed: {e_om} — trying Visual Crossing")
+ 
+        # ── Fallback 1: Visual Crossing ───────────────────────────────────────
+        # Per-API-key limit (not shared-IP like Open-Meteo free tier).
+        # Free tier: 1,000 records/day, commercial use allowed.
+        # A full 15-day forecast counts as 1 record.
         try:
-            fallback = await _fetch_nasa_power_recent(lat, lon)
-            daily = fallback["daily"]
-            h1_source = "nasa_power_fallback"
-        except Exception as e2:
-            logger.error(f"[weather] NASA POWER fallback also failed: {e2}")
+            vc_data = await _fetch_visual_crossing(lat, lon, forecast_days)
+            daily = vc_data["daily"]
+            h1_source = "visual_crossing_fallback"
+            logger.info("[weather] H1 source: visual_crossing_fallback ✓")
+ 
+        except Exception as e_vc:
+            logger.warning(
+                f"[weather] visual_crossing failed: {e_vc} — trying NASA POWER"
+            )
+ 
+            # ── Fallback 2: NASA POWER (existing last resort) ─────────────────
+            try:
+                nasa_data = await _fetch_nasa_power_recent(lat, lon)
+                daily = nasa_data["daily"]
+                h1_source = "nasa_power_fallback"
+                logger.info("[weather] H1 source: nasa_power_fallback ✓")
+ 
+            except Exception as e_nasa:
+                logger.error(
+                    f"[weather] ALL H1 sources failed. "
+                    f"OM: {e_om} | VC: {e_vc} | NASA: {e_nasa}"
+                )
 
     if daily is not None:
         signals = _compute_derived_signals(daily, crop, sowing_date)
