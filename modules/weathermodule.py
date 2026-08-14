@@ -27,7 +27,7 @@ from datetime import date, timedelta
 from typing import Optional
 import logging
 import os
-import pyeto
+
 sys.path.append(str(pathlib.Path(__file__).parent))
 from enso_iod_module import get_enso_iod_state, get_monthly_adjustment_factor
 
