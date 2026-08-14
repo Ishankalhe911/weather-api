@@ -27,6 +27,7 @@ from datetime import date, timedelta
 from typing import Optional
 import logging
 import os
+import pyeto
 sys.path.append(str(pathlib.Path(__file__).parent))
 from enso_iod_module import get_enso_iod_state, get_monthly_adjustment_factor
 
@@ -168,14 +169,13 @@ def _vc_icon_to_wmo(icon: Optional[str]) -> Optional[int]:
     }
     return _MAP.get(icon, None)  # unknown icon → None, formatter skips gracefully
  
- 
 async def _fetch_visual_crossing(lat: float, lon: float, days: int = 15) -> dict:
     """
     Horizon 1 fallback: Visual Crossing Timeline API.
- 
+
     Returns a dict with the same key structure as _fetch_open_meteo() so that
     _compute_derived_signals() receives identical input regardless of source.
- 
+
     Key differences vs Open-Meteo (handled below):
       - VC caps at 15 days (not 16) — days param clamped to 15
       - VC humidity is a single daily average (not separate max/min)
@@ -183,51 +183,59 @@ async def _fetch_visual_crossing(lat: float, lon: float, days: int = 15) -> dict
         → Delta-T computation disabled (same as NASA POWER fallback path)
         → _compute_derived_signals already adds operational_factors warning
       - VC icon is a string → mapped to WMO int via _vc_icon_to_wmo()
-      - VC et0 field requires explicit inclusion in elements param
+      - VC et0 field triggers 401 on free tier → calculated locally via pyeto
       - VC windgust = daily max gust → maps to wind_speed_10m_max (correct)
- 
+
     API key loaded from VISUAL_CROSSING_API_KEY env var.
     If key is missing → raises immediately so caller falls through to NASA POWER.
     """
     if not VISUAL_CROSSING_API_KEY:
         raise ValueError("VISUAL_CROSSING_API_KEY not set — skipping VC fallback")
- 
+
     # VC Timeline API: GET /timeline/{lat},{lon}/{date1}/{date2}
     # Omitting date range → returns today + next 14 days (15 days total)
     # unitGroup=metric → °C, mm, km/h — matches Open-Meteo units exactly
     # include=days     → daily data only, no hourly (keeps response small)
-    # elements         → explicit list so et0 is guaranteed to be included
-    #                    (et0 is an ag field, not always in the default set)
+    # elements         → et0 REMOVED to prevent 401 Unauthorized on Free Tier!
     location = f"{lat},{lon}"
     params = {
         "unitGroup":  "metric",
         "include":    "days",
         "elements":   (
             "datetime,tempmax,tempmin,humidity,"
-            "precip,precipprob,et0,windgust,windspeed,cloudcover,icon,severerisk"
+            "precip,precipprob,windgust,windspeed,cloudcover,icon,severerisk"
         ),
         "key":        VISUAL_CROSSING_API_KEY,
         "contentType": "json",
     }
- 
+
     url = f"{VISUAL_CROSSING_URL}/{location}"
- 
+
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
         r = await client.get(url, params=params)
         r.raise_for_status()
         data = r.json()
- 
+
     vc_days = data.get("days", [])
     if not vc_days:
         raise ValueError("Visual Crossing returned empty days array")
- 
+
     # Clamp to requested forecast_days (VC always returns up to 15)
     vc_days = vc_days[:min(days, 15)]
- 
+
     def _safe(val, default=None):
         """Return None for missing/null values; keep 0.0 as valid."""
         return default if val is None else val
- 
+
+    # 🚀 MAGIC HAPPENS HERE: Calculate ET0 locally for every day
+    calculated_et0_list = []
+    for d in vc_days:
+        t_max = _safe(d.get("tempmax"), 0.0)
+        t_min = _safe(d.get("tempmin"), 0.0)
+        date_str = d["datetime"]
+        et0_val = _calculate_fallback_et0(lat, date_str, t_min, t_max)
+        calculated_et0_list.append(et0_val)
+
     # Build the same dict shape _fetch_open_meteo() returns under ["daily"]
     daily = {
         "time":                        [d["datetime"] for d in vc_days],
@@ -236,14 +244,11 @@ async def _fetch_visual_crossing(lat: float, lon: float, days: int = 15) -> dict
         "temperature_2m_min":          [_safe(d.get("tempmin")) for d in vc_days],
         # VC gives single daily avg humidity — use as rh_max proxy
         # rh_min = None → _compute_derived_signals disables Delta-T
-        # (same behaviour as NASA POWER fallback, already handled gracefully)
         "relative_humidity_2m_max":    [_safe(d.get("humidity")) for d in vc_days],
         "relative_humidity_2m_min":    [None] * len(vc_days),
-        # et0: Penman-Monteith reference ET — exact semantic match with Open-Meteo
-        # Will be None if VC doesn't return it (old account / plan restriction)
-        "et0_fao_evapotranspiration":  [_safe(d.get("et0")) for d in vc_days],
+        # 🚀 INJECT LOCAL ET0 HERE:
+        "et0_fao_evapotranspiration":  calculated_et0_list,
         # windgust = daily max gust speed → best proxy for wind_speed_10m_max
-        # Fall back to windspeed (avg) if windgust is absent
         "wind_speed_10m_max":          [
             _safe(d.get("windgust") if d.get("windgust") is not None
                   else d.get("windspeed"))
@@ -254,8 +259,33 @@ async def _fetch_visual_crossing(lat: float, lon: float, days: int = 15) -> dict
         # soil_moisture not available from VC free tier
         "soil_moisture_0_to_1cm":      [None] * len(vc_days),
     }
- 
+
     return {"daily": daily}
+import pyeto
+
+def _calculate_fallback_et0(lat_decimal: float, date_str: str, t_min: float, t_max: float) -> float:
+    """Calculates ET0 using the Hargreaves equation locally to bypass API paywalls."""
+    try:
+        # Convert date string (YYYY-MM-DD) to a day of the year (1-365)
+        dt_obj = date.fromisoformat(date_str)
+        day_of_year = dt_obj.timetuple().tm_yday
+        
+        lat_rad = pyeto.deg2rad(lat_decimal)
+        
+        # Calculate solar radiation
+        sol_dec = pyeto.sol_dec(day_of_year)
+        sha = pyeto.sunset_hour_angle(lat_rad, sol_dec)
+        ird = pyeto.inv_rel_dist_earth_sun(day_of_year)
+        et_rad = pyeto.et_rad(lat_rad, sol_dec, sha, ird)
+        
+        # Calculate Mean Temp and ET0
+        t_mean = (t_max + t_min) / 2.0
+        et0 = pyeto.hargreaves(t_min, t_max, t_mean, et_rad)
+        
+        return round(max(et0, 0.0), 2)
+    except Exception as e:
+        logger.warning(f"ET0 calculation failed: {e}")
+        return 0.0
 
 # ---------------------------------------------------------------------------
 # HORIZON 0 & microclimate helpers
