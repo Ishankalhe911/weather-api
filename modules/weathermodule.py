@@ -107,12 +107,19 @@ async def _fetch_nasa_power_recent(lat: float, lon: float) -> dict:
 
     props = data["properties"]["parameter"]
     dates = sorted(props["PRECTOTCORR"].keys())
+    iso_dates = [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in dates]
+
+
 
     def _clean_nasa(val):
+
         return None if val == -999.0 else val
 
+
+
     daily = {
-        "time": dates,
+
+        "time": iso_dates, # 🚀 Output the clean dates here
         "precipitation_sum": [_clean_nasa(props["PRECTOTCORR"].get(d)) for d in dates],
         "temperature_2m_max": [_clean_nasa(props["T2M_MAX"].get(d)) for d in dates],
         "temperature_2m_min": [_clean_nasa(props["T2M_MIN"].get(d)) for d in dates],
