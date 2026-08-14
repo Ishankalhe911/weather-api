@@ -268,32 +268,56 @@ async def _fetch_visual_crossing(lat: float, lon: float, days: int = 15) -> dict
     }
 
     return {"daily": daily}
-import pyeto
+
+
+import math
+from datetime import date
 
 def _calculate_fallback_et0(lat_decimal: float, date_str: str, t_min: float, t_max: float) -> float:
-    """Calculates ET0 using the Hargreaves equation locally to bypass API paywalls."""
+    """
+    Calculates ET0 using pure Python (FAO-56 Hargreaves equation).
+    Zero external libraries needed. Safe for Render environments.
+    """
     try:
-        # Convert date string (YYYY-MM-DD) to a day of the year (1-365)
+        if t_max is None or t_min is None or t_max < t_min:
+            return 0.0
+
+        # 1. Convert date string (YYYY-MM-DD) to Day of the Year (1-365)
         dt_obj = date.fromisoformat(date_str)
-        day_of_year = dt_obj.timetuple().tm_yday
+        J = dt_obj.timetuple().tm_yday
         
-        lat_rad = pyeto.deg2rad(lat_decimal)
+        lat_rad = math.radians(lat_decimal)
         
-        # Calculate solar radiation
-        sol_dec = pyeto.sol_dec(day_of_year)
-        sha = pyeto.sunset_hour_angle(lat_rad, sol_dec)
-        ird = pyeto.inv_rel_dist_earth_sun(day_of_year)
-        et_rad = pyeto.et_rad(lat_rad, sol_dec, sha, ird)
+        # 2. Solar declination
+        solar_dec = 0.409 * math.sin((2.0 * math.pi / 365.0) * J - 1.39)
         
-        # Calculate Mean Temp and ET0
+        # 3. Inverse relative distance Earth-Sun
+        dr = 1.0 + 0.033 * math.cos((2.0 * math.pi / 365.0) * J)
+        
+        # 4. Sunset hour angle (with domain bounds safety)
+        x = -math.tan(lat_rad) * math.tan(solar_dec)
+        x = max(-1.0, min(1.0, x))
+        omega_s = math.acos(x)
+        
+        # 5. Extraterrestrial radiation (Ra) in MJ m-2 day-1
+        gsc = 0.0820  # solar constant
+        ra_multiplier = (24.0 * 60.0) / math.pi
+        term1 = omega_s * math.sin(lat_rad) * math.sin(solar_dec)
+        term2 = math.cos(lat_rad) * math.cos(solar_dec) * math.sin(omega_s)
+        ra_mj = ra_multiplier * gsc * dr * (term1 + term2)
+        
+        # 6. Convert Ra to equivalent evaporation (mm/day) using 0.408 factor
+        ra_mm = ra_mj * 0.408
+        
+        # 7. Final Hargreaves ET0 calculation
         t_mean = (t_max + t_min) / 2.0
-        et0 = pyeto.hargreaves(t_min, t_max, t_mean, et_rad)
+        et0 = 0.0023 * ra_mm * (t_mean + 17.8) * math.sqrt(t_max - t_min)
         
         return round(max(et0, 0.0), 2)
+        
     except Exception as e:
-        logger.warning(f"ET0 calculation failed: {e}")
+        logger.warning(f"Local ET0 math failed: {e}")
         return 0.0
-
 # ---------------------------------------------------------------------------
 # HORIZON 0 & microclimate helpers
 # ---------------------------------------------------------------------------
