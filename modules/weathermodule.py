@@ -36,14 +36,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_URL = "https://agriintellect.site/v1/forecast"
 NASA_POWER_DAILY_URL = "https://power.larc.nasa.gov/api/temporal/daily/point"
 NASA_POWER_CLIMATOLOGY_URL = "https://power.larc.nasa.gov/api/temporal/climatology/point"
 VISUAL_CROSSING_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY", "")
 
-TIMEOUT_SECONDS =4.0 
+TIMEOUT_SECONDS =10.0 
 CLIMATOLOGY_TIMEOUT = 9.0
 
 CROP_THRESHOLDS = {
@@ -71,16 +70,25 @@ MONTH_DAYS = {
 
 async def _fetch_open_meteo(lat: float, lon: float, days: int = 16) -> dict:
     params = {
-        "latitude": lat, "longitude": lon,
+        "latitude": lat,
+        "longitude": lon,
         "daily": ",".join([
             "precipitation_sum",
+            "precipitation_probability_max",
             "temperature_2m_max",
             "temperature_2m_min",
             "relative_humidity_2m_max",
             "relative_humidity_2m_min",
             "et0_fao_evapotranspiration",
             "wind_speed_10m_max",
-            "weathercode"
+            "wind_gusts_10m_max",
+            "weathercode",
+        ]),
+        "hourly": ",".join([
+            "wind_speed_10m",
+            "wind_gusts_10m",
+            "precipitation",
+            "precipitation_probability",
         ]),
         "timezone": "auto",
         "forecast_days": days,
@@ -89,7 +97,6 @@ async def _fetch_open_meteo(lat: float, lon: float, days: int = 16) -> dict:
         r = await client.get(OPEN_METEO_URL, params=params)
         r.raise_for_status()
         return r.json()
-
 
 async def _fetch_nasa_power_recent(lat: float, lon: float) -> dict:
     """Fallback for Horizon 1 if Open-Meteo fails - last 7 days actuals only."""
@@ -505,12 +512,116 @@ def _build_seasonal_outlook(
 
     return outlook
 
+def _compute_spray_windows(hourly: dict, timezone: str) -> dict:
+    """
+    Classify each 3-hour block of the day as favorable / caution / unfavorable
+    for manual spray operations.
 
+    Thresholds are FarmyWorth internal advisory heuristics — not pesticide
+    label limits. The formatter converts these to Marathi farmer language.
+
+    favorable  : safe to spray
+    caution    : marginal — farmer should watch conditions
+    unfavorable: do not spray
+    """
+    times     = hourly.get("time", [])
+    wind      = hourly.get("wind_speed_10m", [])
+    gusts     = hourly.get("wind_gusts_10m", [])
+    rain      = hourly.get("precipitation", [])
+    rain_prob = hourly.get("precipitation_probability", [])
+
+    if not times:
+        return {}
+
+    windows_by_date = {}
+
+    for i in range(0, len(times), 3):
+        block_times = times[i:i + 3]
+        if not block_times:
+            continue
+
+        block_wind      = [v for v in wind[i:i + 3]      if v is not None]
+        block_gust      = [v for v in gusts[i:i + 3]     if v is not None]
+        block_rain      = [v for v in rain[i:i + 3]      if v is not None]
+        block_rain_prob = [v for v in rain_prob[i:i + 3] if v is not None]
+
+        if not block_wind:
+            continue
+
+        window_date      = block_times[0][:10]
+        avg_wind         = sum(block_wind) / len(block_wind)
+        max_wind         = max(block_wind)
+        max_gust         = max(block_gust)      if block_gust      else None
+        total_rain       = sum(block_rain)      if block_rain      else 0.0
+        max_rain_prob    = max(block_rain_prob) if block_rain_prob else None
+
+        wind_ok      = max_wind  < 15
+        gust_ok      = max_gust  is None or max_gust < 20
+        rain_ok      = total_rain < 0.5
+        rain_prob_ok = max_rain_prob is None or max_rain_prob < 40
+
+        if wind_ok and gust_ok and rain_ok and rain_prob_ok:
+            status = "favorable"
+        elif max_wind < 20 and gust_ok and total_rain < 2.0:
+            status = "caution"
+        else:
+            status = "unfavorable"
+
+        window = {
+            "window_start":           block_times[0],
+            "window_end":             block_times[-1],
+            "avg_wind_kmh":           round(avg_wind, 1),
+            "max_wind_kmh":           round(max_wind, 1),
+            "max_gust_kmh":           round(max_gust, 1) if max_gust is not None else None,
+            "rain_mm":                round(total_rain, 1),
+            "rain_probability_max_pct": max_rain_prob,
+            "spray_status":           status,
+        }
+
+        windows_by_date.setdefault(window_date, []).append(window)
+
+    return windows_by_date
+
+
+def _select_best_spray_windows(spray_windows: dict) -> dict:
+    """
+    Pick the single best spray window per day.
+
+    Ranking: favorable beats caution, then lowest max_wind,
+    then lowest max_gust, then lowest rain probability.
+    Returns None for a day where every window is unfavorable.
+    """
+    best = {}
+
+    for day, windows in spray_windows.items():
+        favorable  = [w for w in windows if w["spray_status"] == "favorable"]
+        candidates = favorable or [w for w in windows if w["spray_status"] == "caution"]
+
+        if not candidates:
+            best[day] = None
+            continue
+
+        best[day] = min(
+            candidates,
+            key=lambda w: (
+                w["max_wind_kmh"],
+                w["max_gust_kmh"]           if w["max_gust_kmh"]           is not None else 999,
+                w["rain_probability_max_pct"] if w["rain_probability_max_pct"] is not None else 999,
+            ),
+        )
+
+    return best
 # ---------------------------------------------------------------------------
 # Derived signal computation (pure logic - Horizon 1 data only, no I/O)
 # ---------------------------------------------------------------------------
 
-def _compute_derived_signals(daily: dict, crop: str, sowing_date: Optional[str]) -> dict:
+def _compute_derived_signals(
+    daily: dict,
+    crop: str,
+    sowing_date: Optional[str],
+    hourly: Optional[dict] = None,
+    timezone: str = "UTC",
+) -> dict:
     safe_crop = (crop or "generic").lower()
     thresh = CROP_THRESHOLDS.get(safe_crop, CROP_THRESHOLDS["default"])
 
@@ -519,6 +630,7 @@ def _compute_derived_signals(daily: dict, crop: str, sowing_date: Optional[str])
     t_max = daily.get("temperature_2m_max", [])
     t_min = daily.get("temperature_2m_min", [])
     wind = daily.get("wind_speed_10m_max", [])
+    wind_gust = daily.get("wind_gusts_10m_max", []) 
     et0 = daily.get("et0_fao_evapotranspiration", [])
     rh_max = daily.get("relative_humidity_2m_max", [])
     rh_min = daily.get("relative_humidity_2m_min", [])
@@ -568,7 +680,7 @@ def _compute_derived_signals(daily: dict, crop: str, sowing_date: Optional[str])
     if next_dry_spell is None and run_start is not None and len(rain) - run_start >= 3:
         next_dry_spell = {"start_date": times[run_start], "end_date": times[-1], "days": len(rain) - run_start}
 
-    spray_blocked = [times[i] for i, r in enumerate(rain[:7]) if r is not None and r > thresh["spray_rain_block_mm"]]
+        spray_blocked = [times[i] for i, r in enumerate(rain) if r is not None and r > thresh["spray_rain_block_mm"]]
 
     gdd_accumulated = None
     growth_stage = None
@@ -611,7 +723,11 @@ def _compute_derived_signals(daily: dict, crop: str, sowing_date: Optional[str])
 
     crop_stress_risk_level = "HIGH" if len(crop_stress_factors) >= 2 else ("MEDIUM" if crop_stress_factors else "LOW")
     operational_risk_level = "HIGH" if len(operational_factors) >= 2 else ("MEDIUM" if operational_factors else "LOW")
-
+    spray_windows = {}
+    best_spray_windows = {}
+    if hourly:
+        spray_windows = _compute_spray_windows(hourly, timezone)
+        best_spray_windows = _select_best_spray_windows(spray_windows)
     return {
         "rainfall_total_mm": round(total_rain_mm, 1),
         "rainfall_7d_mm": round(rain_7d_mm, 1),
@@ -630,22 +746,26 @@ def _compute_derived_signals(daily: dict, crop: str, sowing_date: Optional[str])
         "operational_factors": operational_factors,
         "growth_stage": growth_stage,
         "gdd_accumulated_forecast_window": gdd_accumulated,
-        "irrigation_recommended": net_water_balance_7d < -5,
+        "spray_windows": spray_windows,
+        "best_spray_window_by_day": best_spray_windows,
+        "irrigation_recommended": None,
+        "irrigation_recommendation_status": "requires_soil_water_balance",
         "daily_preview": [
-            {
-                "date": times[i],
-                "rain_mm": rain[i],
-                "et0_mm": et0[i] if et0 else None,
-                "t_max_c": t_max[i] if t_max else None,
-                "t_min_c": t_min[i] if t_min else None,
-                "rh_max_pct": rh_max[i] if rh_max else None,
-                "rh_min_pct": rh_min[i] if rh_min else None,
-                "wind_kmh": wind[i] if wind else None,
-                "wcode": wcode[i] if wcode else None,
-            }
-            for i in range(min(7, len(times)))
-        ],
+    {
+        "date": times[i],
+        "rain_mm": rain[i] if i < len(rain) else None,
+        "et0_mm": et0[i] if i < len(et0) else None,
+        "t_max_c": t_max[i] if i < len(t_max) else None,
+        "t_min_c": t_min[i] if i < len(t_min) else None,
+        "rh_max_pct": rh_max[i] if i < len(rh_max) else None,
+        "rh_min_pct": rh_min[i] if i < len(rh_min) else None,
+        "wind_kmh": wind[i] if i < len(wind) else None,
+        "wind_gust_kmh": wind_gust[i] if i < len(wind_gust) else None,
+        "wcode": wcode[i] if i < len(wcode) else None,
     }
+    for i in range(len(times))
+],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -703,11 +823,16 @@ async def get_weather_risk(
 
     h1_source = "open_meteo"
     daily = None
+    hourly = None
+    timezone = "UTC"
  
     # ── Primary: Open-Meteo ───────────────────────────────────────────────────
+    
     try:
         data = await _fetch_open_meteo(lat, lon, forecast_days)
         daily = data["daily"]
+        hourly = data.get("hourly")
+        timezone = data.get("timezone", "UTC")
         logger.info("[weather] H1 source: open_meteo ✓")
  
     except Exception as e_om:
@@ -742,7 +867,13 @@ async def get_weather_risk(
                 )
 
     if daily is not None:
-        signals = _compute_derived_signals(daily, crop, sowing_date)
+        signals = _compute_derived_signals(
+        daily=daily,
+        crop=crop,
+        sowing_date=sowing_date,
+        hourly=hourly,
+        timezone=timezone,
+          )
         signals["source"] = h1_source
         result["horizon_1_forecast"] = signals
     else:
@@ -827,26 +958,66 @@ BAZAAR_OUTPUT_EXAMPLE = {
     "crop": "generic",
     "days_to_harvest": 115,
     "partial_data": False,
-    "horizon_1_forecast": {
+        "horizon_1_forecast": {
         "rainfall_total_mm": 88.4,
         "rainfall_7d_mm": 32.1,
         "et0_7d_mm": 19.7,
         "net_water_balance_7d": 12.4,
+        "next_rain_date": "2026-07-22",
+        "next_dry_spell": None,
+        "optimal_drone_spray_dates": ["2026-07-18", "2026-07-19"],
+        "wind_risk_days": ["2026-07-20"],
+        "pest_disease_risk_windows": [],
+        "heavy_rain_days": [],
+        "heat_stress_days": [],
         "crop_stress_risk_level": "LOW",
         "crop_stress_factors": [],
         "operational_risk_level": "MEDIUM",
         "operational_factors": ["high wind (spray drift risk) on ['2026-07-20']"],
-        "next_rain_date": "2026-07-22",
-        "next_dry_spell": None,
-        "optimal_drone_spray_dates": ["2026-07-18", "2026-07-19"],
-        "pest_disease_risk_windows": [],
-        "wind_risk_days": ["2026-07-20"],
-        "heavy_rain_days": [],
-        "heat_stress_days": [],
-        "gdd_accumulated_forecast_window": 142.5,
         "growth_stage": "vegetative",
-        "irrigation_recommended": False,
-        "daily_preview": [],
+        "gdd_accumulated_forecast_window": 142.5,
+        "spray_windows": {
+            "2026-07-18": [
+                {
+                    "window_start": "2026-07-18T06:00",
+                    "window_end": "2026-07-18T08:00",
+                    "avg_wind_kmh": 8.1,
+                    "max_wind_kmh": 10.4,
+                    "max_gust_kmh": 14.2,
+                    "rain_mm": 0.0,
+                    "rain_probability_max_pct": 10,
+                    "spray_status": "favorable",
+                }
+            ],
+        },
+        "best_spray_window_by_day": {
+            "2026-07-18": {
+                "window_start": "2026-07-18T06:00",
+                "window_end": "2026-07-18T08:00",
+                "avg_wind_kmh": 8.1,
+                "max_wind_kmh": 10.4,
+                "max_gust_kmh": 14.2,
+                "rain_mm": 0.0,
+                "rain_probability_max_pct": 10,
+                "spray_status": "favorable",
+            },
+        },
+        "irrigation_recommended": None,
+        "irrigation_recommendation_status": "requires_soil_water_balance",
+        "daily_preview": [
+            {
+                "date": "2026-07-18",
+                "rain_mm": 0.0,
+                "et0_mm": 5.21,
+                "t_max_c": 31.0,
+                "t_min_c": 24.1,
+                "rh_max_pct": 88,
+                "rh_min_pct": 57,
+                "wind_kmh": 10.4,
+                "wind_gust_kmh": 14.2,
+                "wcode": 0,
+            }
+        ],
         "source": "open_meteo",
     },
     "horizon_2_subseasonal": {
