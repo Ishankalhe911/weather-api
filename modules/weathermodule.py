@@ -746,7 +746,6 @@ def _compute_derived_signals(
         "operational_factors": operational_factors,
         "growth_stage": growth_stage,
         "gdd_accumulated_forecast_window": gdd_accumulated,
-        "spray_windows": spray_windows,
         "best_spray_window_by_day": best_spray_windows,
         "irrigation_recommended": None,
         "irrigation_recommendation_status": "requires_soil_water_balance",
