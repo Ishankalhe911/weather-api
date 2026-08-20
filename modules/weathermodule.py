@@ -677,8 +677,8 @@ def _compute_derived_signals(
                 next_dry_spell = {"start_date": times[run_start], "end_date": times[i - 1], "days": i - run_start}
                 break
             run_start = None
-    if next_dry_spell is None and run_start is not None and len(rain) - run_start >= 3:
-        next_dry_spell = {"start_date": times[run_start], "end_date": times[-1], "days": len(rain) - run_start}
+        if next_dry_spell is None and run_start is not None and len(rain) - run_start >= 3:
+            next_dry_spell = {"start_date": times[run_start], "end_date": times[-1], "days": len(rain) - run_start}
 
         spray_blocked = [times[i] for i, r in enumerate(rain) if r is not None and r > thresh["spray_rain_block_mm"]]
 
