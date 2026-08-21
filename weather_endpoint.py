@@ -92,21 +92,22 @@ server.register_extension(bazaar_resource_server_extension)
 # server.register(EVM_NETWORK, ExactEvmServerScheme())  # NEW: Register Base
 # server.register(SVM_NETWORK, ExactSvmServerScheme())
 
-routes: dict = {
-    "POST /weather-risk": {
-        "accepts": [
-            PaymentOption(                                                
+routes: dict[str, RouteConfig] = {
+    "POST /weather-risk": RouteConfig(
+        accepts=[
+            PaymentOption(                                        
                 scheme="exact",
                 network=AVM_NETWORK,
                 pay_to=AVM_ADDRESS,
                 price=AssetAmount(
-                    amount=WEATHER_PRICE,                                         
-                    asset=USDC_ASA_ID,                                            
+                    amount=WEATHER_PRICE,                         
+                    asset=USDC_ASA_ID,                            
+                    
                 ),
-                extra={"name": "USDC", "decimals": 6},
+                extra={"name": "USDC", "decimals": 6, "tag": "x402-global-challenge"},
             ),
         ],
-        "description": (
+        description=(
             "Advanced agrometeorological intelligence API. Delivers multi-horizon "
             "agronomic data: (1) 16-day forecast with derived biological & operational "
             "risk signals (GDD, spray windows); (2) ECMWF sub-seasonal trends; "
@@ -114,9 +115,9 @@ routes: dict = {
             "Provides pure structured payloads optimized for AI agents, DeFi parametric "
             "insurance, and algorithmic agri-trading."
         ),
-        "mime_type": "application/json",
-        "resource": "https://agriintellect.site/weather-risk",
-        "extensions": declare_discovery_extension(
+        mime_type="application/json",
+        resource="https://agriintellect.site/weather-risk",
+        extensions=declare_discovery_extension(
             input={"lat": 18.35, "lon": 77.31, "crop": "soybean"},
             input_schema={
                 "type": "object",
@@ -131,10 +132,8 @@ routes: dict = {
                 "required": ["lat", "lon"]
             },
             body_type="json"
-        ),
-        # ✅ THE HACKATHON TAG IS NOW SAFELY INSIDE A RAW DICTIONARY
-        "extra": {"tag": "x402-global-challenge"}
-    },
+        )
+    ),
 }
 
 # ---------------------------------------------------------------------------
