@@ -104,7 +104,7 @@ routes: dict[str, RouteConfig] = {
                     asset=USDC_ASA_ID,                            
                     
                 ),
-                extra={"name": "USDC", "decimals": 6, "tag": "x402-global-challenge"},
+                extra={"name": "USDC", "decimals": 6},
             ),
         ],
         description=(
@@ -132,7 +132,9 @@ routes: dict[str, RouteConfig] = {
                 "required": ["lat", "lon"]
             },
             body_type="json"
-        )
+        ),
+        extra={"tag": "x402-global-challenge"}
+        
     ),
 }
 
