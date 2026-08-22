@@ -101,7 +101,8 @@ routes: dict[str, RouteConfig] = {
                 pay_to=AVM_ADDRESS,
                 price=AssetAmount(
                     amount=WEATHER_PRICE,                         
-                    asset=USDC_ASA_ID,                            
+                    asset=USDC_ASA_ID, 
+                    extra={"decimals": 6, "tag": "x402-global-challenge"},                           
                     
                 ),
                 extra={"name": "USDC", "decimals": 6, "tag": "x402-global-challenge"},
